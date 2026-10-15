@@ -91,6 +91,7 @@ button.danger { background: var(--danger); }
 .notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 10px 12px; font-size: 0.9rem; }
 
 .photo-preview { width: 160px; height: 160px; object-fit: cover; border-radius: 50%; display: block; margin: 0 auto; border: 3px solid var(--border); }
+.scanner { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: #111827; display: block; }
 .signature { width: 100%; height: 180px; border: 1px dashed #9ca3af; border-radius: 10px; background: #fff; touch-action: none; display: block; }
 
 /* Badge */

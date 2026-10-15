@@ -31,6 +31,11 @@ On arrival: scans the reception QR  ->  "Welcome Ravi, Priya is expecting you"  
 ```
 
 - Invited visitors **skip the details form and host search** — the invitation already has them.
+- After the reception scan, the phone asks **"Do you have a QR invite?"**. *Yes* scans the QR from the
+  invitation (email, printout, another phone) and goes straight to "Welcome Ravi". *No* opens the
+  normal walk-in form. Phones that opened the invite link earlier skip the question.
+- Scanning uses the live camera on HTTPS/localhost. On plain HTTP (office Wi-Fi in dev) browsers block
+  live camera access, so the visitor takes a photo of the QR instead, decoded with `jsqr`.
 - If they never opened the link, typing their invited mobile number in the form finds today's invitation.
 - An invitation works only on its visit date, only once, and only after scanning the reception QR
   (so it still proves the visitor is on site).

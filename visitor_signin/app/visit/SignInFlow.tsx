@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AGREEMENT, LOCATION, VisitorTypeConfig } from "@/lib/config";
 import { BADGE_STORAGE_KEY, INVITE_STORAGE_KEY } from "@/lib/storageKeys";
 import ExistingBadgeLink from "./ExistingBadgeLink";
+import InviteScanner from "./InviteScanner";
 
 type Props = {
   location: typeof LOCATION;
@@ -13,10 +14,14 @@ type Props = {
 
 type HostOption = { id: string; name: string; department: string };
 type Invitation = { token: string; visitorName: string; hostName: string; visitorType: string };
-type Step = "type" | "details" | "host" | "invite" | "photo" | "agreement";
+type Step = "welcome" | "scan" | "type" | "details" | "host" | "invite" | "photo" | "agreement";
+type ScanState = { attempt: number; checking: boolean; error: string | null };
 
 export default function SignInFlow({ location, visitorTypes, agreement }: Props) {
-  const [step, setStep] = useState<Step>("type");
+  // null until we've checked whether this phone already holds an invite, so the welcome
+  // question doesn't flash up for someone who is about to be recognised.
+  const [step, setStep] = useState<Step | null>(null);
+  const [scan, setScan] = useState<ScanState>({ attempt: 0, checking: false, error: null });
   const [type, setType] = useState<VisitorTypeConfig | null>(null);
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [details, setDetails] = useState({ name: "", phone: "", email: "", company: "", purpose: "" });
@@ -29,10 +34,11 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
   const [error, setError] = useState<string | null>(null);
 
   // Invited visitors skip the form and host search (requirements §6 flow: "QR invite? yes: skip the form").
+  // "welcome" and "scan" come before either path, so they aren't counted in the progress bar.
   const steps: Step[] = invitation ? ["invite"] : ["type", "details", "host"];
   if (type?.photoRequired) steps.push("photo");
   if (type?.agreementRequired) steps.push("agreement");
-  const stepIndex = steps.indexOf(step);
+  const stepIndex = step ? steps.indexOf(step) : -1;
   const isLast = stepIndex === steps.length - 1;
 
   const next = () => (isLast ? submit() : setStep(steps[stepIndex + 1]));
@@ -73,10 +79,32 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
     } catch {
       /* storage blocked — phone-number matching still works */
     }
-    if (!token) return;
-    findInvitation(`token=${encodeURIComponent(token)}`).then((inv) => inv && applyInvitation(inv));
+    if (!token) return setStep("welcome");
+    findInvitation(`token=${encodeURIComponent(token)}`).then((inv) => (inv ? applyInvitation(inv) : setStep("welcome")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The visitor scanned the QR in their invitation (FR-KIO-09).
+  const onScanned = async (text: string) => {
+    const retry = (error: string) => setScan((s) => ({ attempt: s.attempt + 1, checking: false, error }));
+    const token = inviteTokenFrom(text);
+    if (!token) {
+      return retry(
+        /\/s\/[^/]+$/.test(text)
+          ? "That's the reception sign-in code. Please scan the QR code in your invitation instead."
+          : "That QR code isn't a visitor invitation. Please scan the code from your invitation.",
+      );
+    }
+    setScan((s) => ({ ...s, checking: true, error: null }));
+    const inv = await findInvitation(`token=${encodeURIComponent(token)}`);
+    if (!inv) {
+      return retry(
+        "This invitation can't be used right now. It may be for another day or another office, or it has already been used. You can still sign in without it.",
+      );
+    }
+    setScan({ attempt: 0, checking: false, error: null });
+    applyInvitation(inv);
+  };
 
   // Once the phone number looks complete: an invitation for today wins; otherwise pre-fill a
   // returning visitor's name/company (FR-KIO-08).
@@ -134,18 +162,58 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
     step === "photo" ? !!photo :
     agreed && !!signature;
 
+  if (!step) {
+    return (
+      <main className="phone">
+        <p className="muted" role="status">Loading…</p>
+      </main>
+    );
+  }
+
   return (
     <main className="phone">
       <p className="muted small" style={{ marginBottom: 6 }}>{location.company} · {location.name}</p>
-      <div className="steps" aria-hidden>
-        {steps.map((s, i) => <span key={s} className={i <= stepIndex ? "done" : ""} />)}
-      </div>
+      {stepIndex >= 0 && (
+        <div className="steps" aria-hidden>
+          {steps.map((s, i) => <span key={s} className={i <= stepIndex ? "done" : ""} />)}
+        </div>
+      )}
 
       <div className="card stack">
+        {step === "welcome" && (
+          <>
+            <h1>Welcome to {location.company}!</h1>
+            <p>Do you have a QR invite?</p>
+            <button onClick={() => { setScan({ attempt: 0, checking: false, error: null }); setStep("scan"); }}>
+              Yes, scan my invite
+            </button>
+            <button className="secondary" onClick={() => setStep("type")}>No, sign in as a visitor</button>
+            <ExistingBadgeLink />
+          </>
+        )}
+
+        {step === "scan" && (
+          <>
+            <h1>Scan your invite</h1>
+            {scan.checking ? (
+              <p className="muted" role="status">Checking your invitation…</p>
+            ) : (
+              <InviteScanner key={scan.attempt} onDetected={onScanned} />
+            )}
+            {scan.error && <p className="error" role="alert">{scan.error}</p>}
+            <p className="muted small">
+              Can't scan it? Sign in without it and enter the mobile number you were invited with. We'll find your invitation.
+            </p>
+            <div className="row">
+              <button className="secondary" onClick={() => setStep("welcome")} disabled={scan.checking}>Back</button>
+              <button className="secondary" onClick={() => setStep("type")} disabled={scan.checking}>Sign in without it</button>
+            </div>
+          </>
+        )}
+
         {step === "type" && (
           <>
-            <h1>Welcome! What brings you in?</h1>
-            <ExistingBadgeLink />
+            <h1>What brings you in?</h1>
             {visitorTypes.map((t) => (
               <button
                 key={t.id}
@@ -157,6 +225,7 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
                 <span>{t.label}<small>{t.description}</small></span>
               </button>
             ))}
+            <button className="secondary" onClick={() => setStep("welcome")}>Back</button>
           </>
         )}
 
@@ -220,6 +289,18 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
       </div>
     </main>
   );
+}
+
+/**
+ * Invite QRs hold the invite link, e.g. http://192.168.0.111:3000/invite/<token>. Only the path
+ * matters: the host may have been on a different address when they created it.
+ */
+function inviteTokenFrom(text: string): string | null {
+  try {
+    return new URL(text.trim()).pathname.match(/^\/invite\/([\w-]+)\/?$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function Field(props: {
