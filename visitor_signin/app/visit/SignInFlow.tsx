@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AGREEMENT, LOCATION, VisitorTypeConfig } from "@/lib/config";
-import ExistingBadgeLink, { BADGE_STORAGE_KEY } from "./ExistingBadgeLink";
+import { BADGE_STORAGE_KEY, INVITE_STORAGE_KEY } from "@/lib/storageKeys";
+import ExistingBadgeLink from "./ExistingBadgeLink";
 
 type Props = {
   location: typeof LOCATION;
@@ -11,11 +12,13 @@ type Props = {
 };
 
 type HostOption = { id: string; name: string; department: string };
-type Step = "type" | "details" | "host" | "photo" | "agreement";
+type Invitation = { token: string; visitorName: string; hostName: string; visitorType: string };
+type Step = "type" | "details" | "host" | "invite" | "photo" | "agreement";
 
 export default function SignInFlow({ location, visitorTypes, agreement }: Props) {
   const [step, setStep] = useState<Step>("type");
   const [type, setType] = useState<VisitorTypeConfig | null>(null);
+  const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [details, setDetails] = useState({ name: "", phone: "", email: "", company: "", purpose: "" });
   const [returning, setReturning] = useState(false);
   const [host, setHost] = useState<HostOption | null>(null);
@@ -25,7 +28,8 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const steps: Step[] = ["type", "details", "host"];
+  // Invited visitors skip the form and host search (requirements §6 flow: "QR invite? yes: skip the form").
+  const steps: Step[] = invitation ? ["invite"] : ["type", "details", "host"];
   if (type?.photoRequired) steps.push("photo");
   if (type?.agreementRequired) steps.push("agreement");
   const stepIndex = steps.indexOf(step);
@@ -34,9 +38,52 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
   const next = () => (isLast ? submit() : setStep(steps[stepIndex + 1]));
   const back = () => setStep(steps[Math.max(0, stepIndex - 1)]);
 
-  // Returning visitor (FR-KIO-08): once the phone number looks complete, pre-fill name/company.
+  const applyInvitation = (inv: Invitation) => {
+    setInvitation(inv);
+    setType(visitorTypes.find((t) => t.id === inv.visitorType) ?? visitorTypes[0]);
+    setStep("invite");
+  };
+
+  const dropInvitation = () => {
+    setInvitation(null);
+    setType(null);
+    setStep("type");
+    try {
+      localStorage.removeItem(INVITE_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const findInvitation = async (query: string): Promise<Invitation | null> => {
+    try {
+      const res = await fetch(`/api/invitations/match?${query}`);
+      if (!res.ok) return null;
+      return ((await res.json()) as { invitation: Invitation | null }).invitation;
+    } catch {
+      return null;
+    }
+  };
+
+  // If this phone opened an invite link earlier, recognise the visitor straight away.
+  useEffect(() => {
+    let token: string | null = null;
+    try {
+      token = localStorage.getItem(INVITE_STORAGE_KEY);
+    } catch {
+      /* storage blocked — phone-number matching still works */
+    }
+    if (!token) return;
+    findInvitation(`token=${encodeURIComponent(token)}`).then((inv) => inv && applyInvitation(inv));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Once the phone number looks complete: an invitation for today wins; otherwise pre-fill a
+  // returning visitor's name/company (FR-KIO-08).
   const lookupPhone = async (phone: string) => {
     if (phone.replace(/\D/g, "").length < 8) return;
+    const inv = await findInvitation(`phone=${encodeURIComponent(phone)}`);
+    if (inv) return applyInvitation(inv);
     try {
       const res = await fetch(`/api/visitors/lookup?phone=${encodeURIComponent(phone)}`);
       if (!res.ok) return;
@@ -51,20 +98,24 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
   };
 
   const submit = async () => {
-    if (!type || !host) return;
+    if (!type || (!invitation && !host)) return;
     setSubmitting(true);
     setError(null);
     try {
+      const body = invitation
+        ? { invitationToken: invitation.token, photo, signature, agreed }
+        : { visitorType: type.id, ...details, hostId: host!.id, photo, signature, agreed };
       const res = await fetch("/api/visits", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ visitorType: type.id, ...details, hostId: host.id, photo, signature, agreed }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sign-in failed");
       const href = `/badge/${data.id}?t=${data.badgeToken}`;
       try {
         localStorage.setItem(BADGE_STORAGE_KEY, JSON.stringify({ href, date: new Date().toDateString() }));
+        localStorage.removeItem(INVITE_STORAGE_KEY);
       } catch {
         /* the badge page still works without storage */
       }
@@ -79,6 +130,7 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
     step === "type" ? !!type :
     step === "details" ? details.name.trim().length > 1 && details.phone.replace(/\D/g, "").length >= 8 :
     step === "host" ? !!host :
+    step === "invite" ? true :
     step === "photo" ? !!photo :
     agreed && !!signature;
 
@@ -123,6 +175,19 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
 
         {step === "host" && <HostPicker selected={host} onSelect={setHost} />}
 
+        {step === "invite" && invitation && (
+          <>
+            <h1>Welcome, {invitation.visitorName.split(" ")[0]}!</h1>
+            <p><strong>{invitation.hostName}</strong> is expecting you today. Your details are already filled in.</p>
+            <button onClick={next} disabled={submitting}>
+              {submitting ? "Signing in…" : isLast ? "Sign in" : "That's me, continue"}
+            </button>
+            <button className="secondary" onClick={dropInvitation} disabled={submitting}>
+              Not {invitation.visitorName.split(" ")[0]}? Sign in as a walk-in
+            </button>
+          </>
+        )}
+
         {step === "photo" && <PhotoStep photo={photo} onPhoto={setPhoto} />}
 
         {step === "agreement" && (
@@ -144,7 +209,7 @@ export default function SignInFlow({ location, visitorTypes, agreement }: Props)
 
         {error && <p className="error" role="alert">{error}</p>}
 
-        {step !== "type" && (
+        {step !== "type" && step !== "invite" && (
           <div className="row">
             <button className="secondary" onClick={back} disabled={submitting}>Back</button>
             <button onClick={next} disabled={!canContinue || submitting}>

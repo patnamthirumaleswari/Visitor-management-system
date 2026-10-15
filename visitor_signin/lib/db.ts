@@ -22,9 +22,11 @@ export type Visit = {
   locationId: string;
   visitorType: string;
   purpose: string;
-  status: "signed_in" | "signed_out";
+  // "expected" = pre-registered, not arrived yet (FR-PRE-01)
+  status: "expected" | "signed_in" | "signed_out";
   source: "qr" | "kiosk" | "portal";
-  signedInAt: string;
+  expectedDate?: string; // YYYY-MM-DD, for pre-registered visits
+  signedInAt?: string;
   signedOutAt?: string;
   badgeToken: string;
   agreementVersion?: string;
@@ -40,10 +42,22 @@ export type Notification = {
   sentAt: string;
 };
 
-type Data = {
+// The invite a host sends before the visit (FR-PRE-02). qrToken is what the invite link/QR carries.
+export type Invitation = {
+  id: string;
+  visitId: string;
+  qrToken: string;
+  validFrom: string; // YYYY-MM-DD
+  validTo: string; // YYYY-MM-DD
+  createdAt: string;
+  usedAt?: string;
+};
+
+export type Data = {
   hosts: Host[];
   visitors: Visitor[];
   visits: Visit[];
+  invitations: Invitation[];
   usedSessions: string[];
   notifications: Notification[];
 };
@@ -58,9 +72,11 @@ const SEED: Data = {
     { id: "h3", name: "Priya Nair", email: "priya@example.com", phone: "+913333333333", department: "HR" },
     { id: "h4", name: "Arjun Reddy", email: "arjun@example.com", phone: "+914444444444", department: "Finance" },
     { id: "h5", name: "Meera Iyer", email: "meera@example.com", phone: "+915555555555", department: "Operations" },
+    { id: "h6", name: "Kiran Kumar", email: "kiran@example.com", phone: "+916666666666", department: "Facilities" },
   ],
   visitors: [],
   visits: [],
+  invitations: [],
   usedSessions: [],
   notifications: [],
 };
@@ -70,7 +86,9 @@ function load(): Data {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(DB_FILE, JSON.stringify(SEED, null, 2));
   }
-  return JSON.parse(fs.readFileSync(DB_FILE, "utf8")) as Data;
+  const data = JSON.parse(fs.readFileSync(DB_FILE, "utf8")) as Data;
+  data.invitations ??= []; // db.json files created before pre-registration existed
+  return data;
 }
 
 function save(data: Data) {

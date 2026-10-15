@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { AGREEMENT, VISITOR_TYPES } from "@/lib/config";
-import { newId, normalizePhone, write, type Visit, type Visitor } from "@/lib/db";
+import { AGREEMENT, VISITOR_TYPES, type VisitorTypeConfig } from "@/lib/config";
+import { newId, normalizePhone, write, type Host, type Visit, type Visitor } from "@/lib/db";
+import { findOpenInvitation } from "@/lib/invitations";
 import { notifyHost } from "@/lib/notify";
 import { getSignInSession, SESSION_COOKIE } from "@/lib/session";
-import { randomToken } from "@/lib/token";
+import { randomToken, type TokenPayload } from "@/lib/token";
 
 export const dynamic = "force-dynamic";
 
 type Body = {
+  invitationToken?: string;
   visitorType?: string;
   name?: string;
   phone?: string;
@@ -28,7 +30,10 @@ const isImageDataUrl = (v: unknown): v is string =>
 
 const clean = (v: unknown, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
+const SESSION_USED = "You're already signed in from this scan.";
+
 // Creates the visit from the phone flow. The session is consumed, so one QR scan = one sign-in.
+// Invited visitors send their invitation token instead of the form; walk-ins send the form.
 export async function POST(req: Request) {
   const session = await getSignInSession();
   if (!session) {
@@ -39,9 +44,42 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    return bad("Invalid request");
   }
 
+  return typeof body.invitationToken === "string" && body.invitationToken
+    ? signInInvited(session, body, body.invitationToken)
+    : signInWalkIn(session, body);
+}
+
+// Pre-registered visitor: name, phone, host and type come from the invitation (FR-KIO-09).
+async function signInInvited(session: TokenPayload, body: Body, token: string) {
+  const result = write((d) => {
+    if (d.usedSessions.includes(session.n)) return { error: SESSION_USED, status: 409 };
+    const match = findOpenInvitation(d, { token }, session.d);
+    if (!match) return { error: "This invitation isn't valid today. Please sign in as a walk-in visitor.", status: 404 };
+
+    const type = VISITOR_TYPES.find((t) => t.id === match.visit.visitorType) ?? VISITOR_TYPES[0];
+    const problem = checkPhotoAndAgreement(type, body);
+    if (problem) return { error: problem, status: 400 };
+
+    const now = new Date().toISOString();
+    if (isImageDataUrl(body.photo)) match.visitor.photo = body.photo;
+    Object.assign(match.visit, {
+      status: "signed_in",
+      source: "qr",
+      signedInAt: now,
+      ...agreementFields(type, body),
+    } satisfies Partial<Visit>);
+    match.invitation.usedAt = now;
+    d.usedSessions.push(session.n);
+    return { host: match.host, visitor: match.visitor, visit: match.visit };
+  });
+
+  return "error" in result ? NextResponse.json({ error: result.error }, { status: result.status }) : finish(result);
+}
+
+async function signInWalkIn(session: TokenPayload, body: Body) {
   const type = VISITOR_TYPES.find((t) => t.id === body.visitorType);
   const name = clean(body.name);
   const phone = normalizePhone(clean(body.phone, 20));
@@ -53,14 +91,14 @@ export async function POST(req: Request) {
   if (name.length < 2) return bad("Enter your full name.");
   if (phone.replace(/\D/g, "").length < 8) return bad("Enter a valid mobile number.");
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return bad("Enter a valid email or leave it empty.");
-  if (type.photoRequired && !isImageDataUrl(body.photo)) return bad("A photo is required.");
-  if (type.agreementRequired && (!body.agreed || !isImageDataUrl(body.signature))) return bad("Please accept and sign the agreement.");
+  const problem = checkPhotoAndAgreement(type, body);
+  if (problem) return bad(problem);
 
   const result = write((d) => {
     // Re-check inside the write so two rapid submits can't both use the same session.
-    if (d.usedSessions.includes(session.n)) return { error: "already-used" as const };
+    if (d.usedSessions.includes(session.n)) return { error: SESSION_USED, status: 409 };
     const host = d.hosts.find((h) => h.id === body.hostId);
-    if (!host) return { error: "no-host" as const };
+    if (!host) return { error: "Choose who you are visiting.", status: 400 };
 
     let visitor = d.visitors.find((v) => v.phone === phone);
     if (visitor) {
@@ -82,25 +120,33 @@ export async function POST(req: Request) {
       source: "qr",
       signedInAt: new Date().toISOString(),
       badgeToken: randomToken(),
-      ...(type.agreementRequired && { agreementVersion: AGREEMENT.version, signature: body.signature as string }),
+      ...agreementFields(type, body),
     };
     d.visits.push(visit);
     d.usedSessions.push(session.n);
     return { host, visitor, visit };
   });
 
-  if ("error" in result) {
-    return result.error === "no-host"
-      ? bad("Choose who you are visiting.")
-      : NextResponse.json({ error: "You're already signed in from this scan." }, { status: 409 });
-  }
+  return "error" in result ? NextResponse.json({ error: result.error }, { status: result.status }) : finish(result);
+}
 
+function checkPhotoAndAgreement(type: VisitorTypeConfig, body: Body): string | null {
+  if (type.photoRequired && !isImageDataUrl(body.photo)) return "A photo is required.";
+  if (type.agreementRequired && (!body.agreed || !isImageDataUrl(body.signature))) return "Please accept and sign the agreement.";
+  return null;
+}
+
+function agreementFields(type: VisitorTypeConfig, body: Body) {
+  return type.agreementRequired ? { agreementVersion: AGREEMENT.version, signature: body.signature as string } : {};
+}
+
+async function finish({ host, visitor, visit }: { host: Host; visitor: Visitor; visit: Visit }) {
   (await cookies()).delete(SESSION_COOKIE);
 
   // Don't make the visitor wait on email/SMS delivery.
-  notifyHost(result.host, result.visitor, result.visit).catch((e) => console.error("[notify] failed", e));
+  notifyHost(host, visitor, visit).catch((e) => console.error("[notify] failed", e));
 
-  return NextResponse.json({ id: result.visit.id, badgeToken: result.visit.badgeToken }, { status: 201 });
+  return NextResponse.json({ id: visit.id, badgeToken: visit.badgeToken }, { status: 201 });
 }
 
 function bad(error: string) {

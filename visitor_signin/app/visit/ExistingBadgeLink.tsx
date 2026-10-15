@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-export const BADGE_STORAGE_KEY = "vms_badge";
+import { BADGE_STORAGE_KEY } from "@/lib/storageKeys";
 
 /** Shows "View my badge" if this phone signed in earlier today. */
 export default function ExistingBadgeLink() {

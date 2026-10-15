@@ -9,7 +9,7 @@ export async function GET() {
   const onsite = read((d) =>
     d.visits
       .filter((v) => v.status === "signed_in")
-      .sort((a, b) => b.signedInAt.localeCompare(a.signedInAt))
+      .sort((a, b) => (b.signedInAt ?? "").localeCompare(a.signedInAt ?? ""))
       .map((v) => {
         const visitor = d.visitors.find((p) => p.id === v.visitorId);
         const host = d.hosts.find((h) => h.id === v.hostId);

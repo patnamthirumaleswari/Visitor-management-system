@@ -5,6 +5,7 @@ export const LOCATION = {
   id: "hq",
   name: "Head Office",
   company: "Acme Pvt Ltd",
+  timezone: "Asia/Kolkata", // decides what "today" means for invitations
   welcomeText: "Welcome! Scan to sign in on your phone",
 };
 

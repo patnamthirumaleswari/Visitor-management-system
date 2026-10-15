@@ -20,7 +20,8 @@ export default async function BadgePage({
 
   const data = read((d) => {
     const visit = d.visits.find((v) => v.id === id);
-    if (!visit || !t || visit.badgeToken !== t) return null;
+    // An "expected" visit has no badge yet — the visitor hasn't signed in.
+    if (!visit || !t || visit.badgeToken !== t || visit.status === "expected") return null;
     return {
       visit,
       visitor: d.visitors.find((v) => v.id === visit.visitorId)!,
@@ -31,7 +32,7 @@ export default async function BadgePage({
 
   const { visit, visitor, host } = data;
   const type = VISITOR_TYPES.find((v) => v.id === visit.visitorType);
-  const signedIn = new Date(visit.signedInAt);
+  const signedIn = new Date(visit.signedInAt ?? Date.now());
   const validDate = signedIn.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
   // The badge QR lets reception (or a future kiosk scanner) look up this visit (FR-KIO-10).
   const badgeQr = await QRCode.toDataURL(`${publicBaseUrl()}/badge/${visit.id}?t=${visit.badgeToken}`, { margin: 1, width: 300 });

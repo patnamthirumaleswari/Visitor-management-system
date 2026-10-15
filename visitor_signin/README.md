@@ -22,12 +22,32 @@ for 90 s)                            /visit       type -> details -> host -> pho
   and works over plain HTTP on the office Wi-Fi (the `getUserMedia` API would need HTTPS).
 - **Returning visitors:** typing a known mobile number pre-fills name and company.
 
+## Pre-registration (FR-PRE-01/02, FR-KIO-09)
+
+```
+Host: /pre-register  ->  invitation saved on the server  ->  invite link + QR to send to the visitor
+Visitor opens link   ->  /invite/<code>  "You're expected on 15 Oct" (invite remembered on the phone)
+On arrival: scans the reception QR  ->  "Welcome Ravi, Priya is expecting you"  ->  photo + sign  ->  badge
+```
+
+- Invited visitors **skip the details form and host search** — the invitation already has them.
+- If they never opened the link, typing their invited mobile number in the form finds today's invitation.
+- An invitation works only on its visit date, only once, and only after scanning the reception QR
+  (so it still proves the visitor is on site).
+- `/admin` lists who is expected today and hasn't arrived.
+
+Pre-registration started as a separate Vite app (`client/`, branch `feature/pre-registration-and-qr-codes`)
+that kept invitations in the host's browser `localStorage`; it now lives here and saves to the server so
+reception can recognise the visitor.
+
 | Page | Who uses it |
 |---|---|
 | `/kiosk` | Tablet/TV at reception |
 | `/visit` | Visitor's phone (after scanning) |
 | `/badge/<id>?t=...` | Visitor's phone: badge and sign-out |
-| `/admin` | Reception: who is on site, manual sign-out |
+| `/pre-register` | Host: invite a visitor |
+| `/invite/<code>` | Visitor's phone: their invitation |
+| `/admin` | Reception: who is on site, who is expected, manual sign-out |
 
 ## Run it
 
@@ -50,8 +70,8 @@ If the phone can't load the page, allow Node through Windows Firewall on private
 ## Prototype shortcuts to replace before production
 
 - `lib/db.ts` stores everything in `data/db.json`. Swap for PostgreSQL (Prisma/Drizzle).
-- `lib/notify.ts` logs host notifications to the console. Plug in SendGrid / Twilio via a job queue.
-- `/admin` and `/api/admin/*` have **no login**. Add auth + RBAC (NFR-SEC-03) and audit logging (FR-ROLE-02).
+- `lib/notify.ts` logs host notifications and visitor invitations to the console. Plug in SendGrid / Twilio via a job queue.
+- `/admin`, `/api/admin/*`, `/pre-register` and `POST /api/invitations` have **no login**. Add auth + RBAC (NFR-SEC-03) and audit logging (FR-ROLE-02).
 - Photos and signatures are stored as data URLs. Move to S3 with encryption at rest (NFR-SEC-01).
 - Set a strong `APP_SECRET` and serve over HTTPS.
 - Single location and hard-coded visitor types in `lib/config.ts`; these become admin-managed tables.
